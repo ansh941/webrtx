@@ -133,6 +133,7 @@ function patch() {
     return bg;
   }
 
+  // WebGPU의 createBuffer 재정의
   GPUDevice.prototype.createBuffer = function (
     descriptor: GPUBufferDescriptor
   ): GPUBuffer {
@@ -150,7 +151,10 @@ function patch() {
       descriptor.usage |= GPUBufferUsage.STORAGE;
       // TODO: see above
     }
+    // 원본의 createBuffer 호출
     const buffer = _originals.GPUDevice_createBuffer.call(this, descriptor);
+
+    // 만약 WebRTX의 기능을 써야한다면
     if (createStagingBuffer) {
       buffer.mapAsync = () => {
         throw new Error('not implemented - cannot use mapAsync with ACCELERATION_STRUCTURE_BUILD_INPUT_READONLY');
@@ -159,25 +163,36 @@ function patch() {
         getMappedRange: buffer.getMappedRange,
         unmap: buffer.unmap,
       };
+      // descriptor와 동일 사이즈의 임시 버퍼인 stagingbuffer를 할당
       (buffer as _GPUBufferExtra).__staging = allocateStagingBuffer(descriptor.size);
+
+      // getMappedRange 재정의
       buffer.getMappedRange = (
         offset?: GPUSize64,
         size?: GPUSize64
       ): ArrayBuffer => {
+        // original getMappedRange 호출
+        // 항상 arraybuffer를 주는데, arraybuffer가 유일하게 memory continuous한 자료구조이기 때문이다.
         const mapped = originalFunctions.getMappedRange.call(buffer, offset, size);
+        // 버퍼의 __lastMapped에 getMappedRange에서 반환된 ArrayBuffer 및 offset을 저장
         (buffer as _GPUBufferExtra).__lastMapped = {
           mapped,
           offset,
         };
         return mapped;
       };
+      
+      // unmap 재정의, 이 시점에 gpu로 완전히 넘긴다.
       // Copy data to staging buffer before unmapping.
       buffer.unmap = (): undefined => {
         const offset = (buffer as _GPUBufferExtra).__lastMapped?.offset || 0;
+        // 여기서 __staging!의 !는 이 변수가 이 시점에 항상 값이 있다는 것을 의미한다. 즉, undefined가 아니라는 것.
         const staging = (buffer as _GPUBufferExtra).__staging!;
         // Copy whole mapped buffer to offset in staging
+        // 스테이징 버퍼에 데이터를 넘기고 원본 mapped 버퍼를 삭제
         (staging.u8_view() as Uint8Array).set(new Uint8Array((buffer as _GPUBufferExtra).__lastMapped!.mapped), offset);
         delete (buffer as _GPUBufferExtra).__lastMapped;
+        // 이후 원본의 unmap 호출
         originalFunctions.unmap.call(buffer);
         return;
       };
@@ -208,11 +223,13 @@ function patch() {
 
   // NOTE: this would create one buffer that maps to the TLAS, BLASes will not have corresponding GPU resources,
   // reusing BLASes across TLASes would duplicate those BLASes.
+  // 실제로 tlas 및 blas의 descriptor로 객체를 생성
   GPUDevice.prototype.createRayTracingAccelerationContainer = function (descriptor: GPURayTracingAccelerationContainerDescriptor_top): GPURayTracingAccelerationContainer_top {
     return new GPURayTracingAccelerationContainer_top_Impl(descriptor);
   }
 
   // We actually build accel on host and upload to GPU buffer.
+  // 실제로 Acceleration Strcture를 생성
   GPUDevice.prototype.hostBuildRayTracingAccelerationContainer = function (container: GPURayTracingAccelerationContainer_top): void {
     // TODO: impl
     (container as GPURayTracingAccelerationContainer_top_Impl).hostBuild(this);

@@ -83,6 +83,7 @@ type StagingBufferMap = HashMap<u32, Vec<u8>>;
 // }
 // STAGING_BUFFERS.lock().unwrap();
 
+// 코드 전체에서 공유하기 위해 staging_buffer_map에 대한 전역 변수를 설정
 static mut NEXT_BUFFER_ID: u32 = 0;
 static mut STAGING_BUFFERS: Option<StagingBufferMap> = None;
 fn staging_buffers_map() -> &'static mut StagingBufferMap {
@@ -94,6 +95,7 @@ fn staging_buffers_map() -> &'static mut StagingBufferMap {
         STAGING_BUFFERS = Some(b);
         let x = STAGING_BUFFERS.as_mut().unwrap();
         x
+        // log!("x: {}", x);
     }
 }
 
@@ -252,7 +254,10 @@ const INTERIOR_NODE_GEOMETRY_ID: i32 = -1;
 
 #[wasm_bindgen]
 pub fn build_blas(blas_descriptor_buffer_id: u32) -> BuiltBvh {
+    // 에러 시 대응을 위한 코드
     utils::set_panic_hook();
+
+    // stagingbuffermap 받아오기 
     let map = staging_buffers_map();
     // TODO: error handling
     let buf = map.get(&blas_descriptor_buffer_id).unwrap();
@@ -263,12 +268,16 @@ pub fn build_blas(blas_descriptor_buffer_id: u32) -> BuiltBvh {
     assert!(num_geoms > 0 && num_total_primitives > 0,);
     assert!(buf_i32_le.len() as i32 == 2 + num_geoms * (GeometryDescriptorField::NumFields as i32));
     let mut primitives = Vec::<Primitive>::with_capacity(num_total_primitives as usize);
+    // geometry를 순회하면서 primitives에 추가
     for gi in 0..num_geoms as u32 {
+        // 이전에 typescript에서 저장했던 값들을 받아오는 파트 -----------------------------------------------------
         let offset = 2 + (GeometryDescriptorField::NumFields as usize) * gi as usize;
         // [geom_type, num_primitives, vbuf_id, ibuf_id]
         let geom: &[i32] =
             &buf_i32_le[offset..offset + (GeometryDescriptorField::NumFields as usize)];
         let np = geom[GeometryDescriptorField::NumPrimitives as usize];
+        // get은 option 타입을 반환하는데, 이는 값이 존재하지 않을 수도 있음.
+        // 따라서 option에서 실제로 값을 사용하려면 unwrap을 통해 값이 존재함을 보장하면서 안전하게 값을 가져와야 함.
         let vbuf = map
             .get(&(geom[GeometryDescriptorField::VbufId as usize] as u32))
             .unwrap();
@@ -284,6 +293,10 @@ pub fn build_blas(blas_descriptor_buffer_id: u32) -> BuiltBvh {
             let ibuf_byte_offset = geom[GeometryDescriptorField::IbufByteOffset as usize] as u32;
             ibuf_u32_le = Some(unsafe { ibuf[(ibuf_byte_offset as usize)..].align_to().1 });
         }
+        // ------------------------------------------------------------------------------------------------
+
+        // primitives에 추가
+        // within_blas_primitive_id는 blas에 관계없이 전체 primitives에서의 id
         for pi in 0..np as u32 {
             primitives.push(Primitive {
                 blas_local_geometry_id: gi,
@@ -742,7 +755,7 @@ mod tests {
                 ],
             );
         }
-
+        
         print!("{:?}", map);
         build_blas(16);
     }

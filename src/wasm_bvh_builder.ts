@@ -91,20 +91,26 @@ function buildBlas(desc: GPURayTracingAccelerationContainerDescriptor_bottom, st
   }
   let numTotalPrimitives = 0;
   // [ num_geoms, num_total_primitives, [geom_type, num_primitives, vbuf_id, ibuf_id]+ ]
+  // 옆 크기에서 2는 num_geoms, num_total_primitives의 자리
   const geomBufferIds = allocateStagingBuffer(Int32Array.BYTES_PER_ELEMENT * (2 + WASM_GEOMETRY_DESCRIPTOR_NUM_I32 * desc.geometries.length));
   const geomBufferIds_i32 = geomBufferIds.i32_view();
   geomBufferIds_i32[0] = desc.geometries.length;
   for (let gi = 0; gi < desc.geometries.length; gi++) {
     const geom = desc.geometries[gi];
+    // descriptor 구조에 따라 geometry type에 맞춘 버퍼 정의
     const vbuf = retrieveStagingBuffer(geom.type === 'triangles' ? geom.vertex.buffer : geom.aabb.buffer);
     const vbufByteOffset = ((geom.type === 'triangles' ? geom.vertex.offset : geom.aabb.offset) || 0);
+    // 이후 사용을 다 하고 난 뒤 임시 버퍼인 stagingbuffer를 해제하기 위해 저장
     stagingBuffersToFree.add(vbuf);
     const vidx = vbuf.id;
     _assert(vidx !== undefined, '');
     let iidx: number | undefined = -1;
     let ibufByteOffset = 0;
+    // number of primitives
     let np = 1;
     if (geom.type === 'triangles') {
+      // 여기서 index는 face의 index.
+      // 현재 코드에서는 사용하지 않고 있으나 이후 사용 예정.
       if (geom.index) {
         const ibuf = retrieveStagingBuffer(geom.index.buffer);
         ibufByteOffset = (geom.index.offset || 0);
@@ -119,6 +125,7 @@ function buildBlas(desc: GPURayTracingAccelerationContainerDescriptor_bottom, st
       }
     }
     numTotalPrimitives += np;
+    // [geometry type, num_primitives, vidx, vbuf offset, iidx, ibuf offset]
     geomBufferIds_i32.set([
       geom.type === 'triangles' ? GeometryType.TRIANGLE : GeometryType.AABB,
       np,
@@ -130,6 +137,7 @@ function buildBlas(desc: GPURayTracingAccelerationContainerDescriptor_bottom, st
   }
   geomBufferIds_i32[1] = numTotalPrimitives;
 
+  // blas build in rust
   const serialized = _wasm_bvh.build_blas(geomBufferIds.id);
   geomBufferIds.free();
   return serialized;
@@ -167,6 +175,7 @@ const TRANSFORM_IDENTITY_COL_MAJOR_4x3 = new Float32Array([
 
 export class Tlas {
   private _bufferBvhTree: [GPUBuffer, GPUBuffer] | undefined;
+  // _descriptor를 멤버로 갖는 Tlas 클래스
   constructor(private readonly _descriptor: GPURayTracingAccelerationContainerDescriptor_top) {
   }
 
@@ -256,6 +265,7 @@ export class Tlas {
   }
 
   build(device: GPUDevice) {
+    // 이미 있다면 바로 종료
     if (this._bufferBvhTree) {
       return;
     }
@@ -264,18 +274,25 @@ export class Tlas {
     }
     let blasGPUBuffer: GPUBuffer | undefined;
     // TODO: separate blas build and tlas build
+    // Map - {key: value} 형식으로 중복값 가능
     const builtBlasTreesInfo: Map<GPURayTracingAccelerationContainerDescriptor_bottom, [number/* blas_entry_index */, number/* blas_geometry_id_offset */, Float32Array/*aabb*/]> = new Map();
     {
+      // Set - {key: value} 형식인데 중복값 불가
       const stagingBuffersToFree: Set<StagingBuffer> = new Set();
       let blasTotalBufferSize = 0;
       const trees: StagingBuffer[] = [];
       let blas_geometry_id_offset = 0;
       let blas_entry_index = 0; // TODO: if tlas is in the front, the offset for the first blas is unknown until tlas finishes building
+
+      // tlas를 순회하면서 내부 Blas들을 build 및 tree 구성
       for (let i = 0; i < this._descriptor.instances.length; i++) {
         const inst = this._descriptor.instances[i];
+        // 이미 blas가 정의되어 있으면 패스
         if (builtBlasTreesInfo.has(inst.blas)) {
           continue;
         }
+        
+
         const builtBlas = buildBlas(inst.blas, stagingBuffersToFree);
         const u8 = builtBlas.serialized.u8_view() as Uint8Array;
         _assert(!!u8, 'null built blas tree');
